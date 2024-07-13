@@ -1,0 +1,135 @@
+// index.js
+
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const mongoose = require('mongoose');
+const bodyParser = require('body-parser');
+
+// Importer les modèles de données
+const { Player, Gift } = require('./models');
+
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
+const PORT = process.env.PORT || 3000;
+const MONGODB_URI = 'mongodb://localhost:27017/tetris_app';
+
+// Middleware
+app.use(bodyParser.json());
+app.use(express.static('public'));
+
+// Connexion à MongoDB
+mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+});
+const db = mongoose.connection;
+db.on('error', console.error.bind(console, 'Erreur de connexion à MongoDB :'));
+db.once('open', () => {
+    console.log('Connexion à MongoDB réussie');
+});
+
+// WebSocket pour le chat en temps réel
+wss.on('connection', (ws) => {
+    ws.on('message', (message) => {
+        // Diffuser le message à tous les clients connectés
+        wss.clients.forEach((client) => {
+            if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(message);
+            }
+        });
+    });
+});
+
+// Route pour envoyer un cadeau
+app.post('/send-gift', async (req, res) => {
+    const { sender, receiver, amount } = req.body;
+
+    try {
+        // Vérifier si le sender a suffisamment de pièces pour envoyer le cadeau
+        const senderPlayer = await Player.findOne({ username: sender });
+        if (!senderPlayer || senderPlayer.coins < amount) {
+            return res.status(400).json({ error: 'Solde insuffisant' });
+        }
+
+        // Déduire les pièces du sender
+        senderPlayer.coins -= amount;
+        await senderPlayer.save();
+
+        // Ajouter les pièces au receiver
+        let receiverPlayer = await Player.findOne({ username: receiver });
+        if (!receiverPlayer) {
+            // Créer un nouveau joueur s'il n'existe pas encore
+            receiverPlayer = await Player.create({ username: receiver, coins: 0 });
+        }
+        receiverPlayer.coins += amount;
+        await receiverPlayer.save();
+
+        // Enregistrer le cadeau dans la base de données
+        const newGift = new Gift({
+            sender: sender,
+            receiver: receiver,
+            amount: amount,
+            commission: amount * 0.1 // 10% de commission
+        });
+        await newGift.save();
+
+        res.status(200).json({ message: 'Cadeau envoyé avec succès' });
+    } catch (error) {
+        console.error('Erreur lors de l\'envoi du cadeau :', error);
+        res.status(500).json({ error: 'Erreur lors de l\'envoi du cadeau' });
+    }
+});
+
+// Route pour acheter des pièces virtuelles
+app.post('/buy-coins', async (req, res) => {
+    const { username, amount } = req.body;
+
+    try {
+        const player = await Player.findOne({ username: username });
+        if (!player) {
+            return res.status(404).json({ error: 'Joueur non trouvé' });
+        }
+
+        // Simuler l'achat de pièces (ajouter simplement le montant spécifié)
+        player.coins += amount;
+        await player.save();
+
+        res.status(200).json({ message: `Vous avez acheté ${amount} pièces` });
+    } catch (error) {
+        console.error('Erreur lors de l\'achat de pièces :', error);
+        res.status(500).json({ error: 'Erreur lors de l\'achat de pièces' });
+    }
+});
+
+// Route pour échanger des pièces contre de l'argent réel
+app.post('/exchange-coins', async (req, res) => {
+    const { username, coinsToExchange } = req.body;
+
+    try {
+        const player = await Player.findOne({ username: username });
+        if (!player || player.coins < coinsToExchange) {
+            return res.status(400).json({ error: 'Solde insuffisant pour l\'échange' });
+        }
+
+        // Calculer le montant en devise réelle (simulé)
+        const exchangeRate = 100; // 100 pièces virtuelles = 1 unité de devise
+        const amountInCurrency = coinsToExchange / exchangeRate;
+
+        // Déduire les pièces virtuelles du joueur
+        player.coins -= coinsToExchange;
+        await player.save();
+
+        res.status(200).json({ message: `Échange réussi. Vous avez reçu ${amountInCurrency} unité(s) de devise.` });
+    } catch (error) {
+        console.error('Erreur lors de l\'échange de pièces :', error);
+        res.status(500).json({ error: 'Erreur lors de l\'échange de pièces' });
+    }
+});
+
+// Démarrer le serveur
+server.listen(PORT, () => {
+    console.log(`Serveur en écoute sur le port ${PORT}`);
+});
